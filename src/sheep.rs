@@ -1,10 +1,12 @@
+use crate::battle::Level;
 use crate::battle_report::LevelReward;
 use bevy::prelude::*;
 use iyes_loopless::prelude::*;
 
 use rand::{thread_rng, Rng};
 
-use crate::utils::{bounds_check, Attack, Bounds, Health, Speed};
+use crate::ui::{write_text, AsciiSheet};
+use crate::utils::{bounds_check, Attack, Bounds, Health, Speed, UnloadOnExit};
 use crate::{drag::Drag, GameState, NewGame, ScreenToWorld};
 
 pub struct SheepPlugin;
@@ -16,6 +18,7 @@ impl Plugin for SheepPlugin {
             ConditionSet::new()
                 .with_system(init_new_game.run_if_resource_exists::<NewGame>())
                 .with_system(add_level_reward_sheep.run_if_resource_exists::<LevelReward>())
+                .with_system(setup_ui)
                 .into(),
         )
         .add_startup_system_to_stage(StartupStage::PreStartup, load_graphics)
@@ -28,6 +31,7 @@ impl Plugin for SheepPlugin {
                 .run_in_state(GameState::Herding)
                 .with_system(sheep_select)
                 .with_system(update_select_box)
+                .with_system(remove_selected_text)
                 .with_system(drop_sheep)
                 .with_system(wander)
                 .with_system(wobble_sheep)
@@ -99,37 +103,49 @@ impl std::ops::Add<Self> for SheepLevels {
 #[derive(Component, Default)]
 pub struct Sheep {
     // In future we can put all the sheep traits here
-    col: f32,
+    color: f32,
     levels: SheepLevels,
 }
 
 impl Sheep {
-    fn from_col(col: f32) -> Self {
-        Self { col, ..default() }
+    fn from_col(color: f32) -> Self {
+        Self { color, ..default() }
     }
 
     fn combine(&self, other: &Self) -> Self {
         let mut rng = thread_rng();
         Self {
-            col: 0.1f32.max((self.col + other.col) / 2.0 + rng.gen_range(-0.1..=0.1)),
+            color: 0.1f32.max((self.color + other.color) / 2.0 + rng.gen_range(-0.1..=0.1)),
             levels: self.levels + other.levels,
         }
     }
 
     /// TODO: Currently we sum all the levels times the SHEEP_DEFAULT_ATTACK to get the
     /// `attack_damage`. Should probably be modified based on the different trait + combine RNG.
-    pub fn attack_multiplier(&self) -> usize {
-        self.levels.base + self.levels.spear + self.levels.tank + self.levels.medic
+    pub fn sum_levels(&self) -> f32 {
+        (self.levels.base + self.levels.spear + self.levels.tank + self.levels.medic) as f32
     }
 
     /// If this component is attached to the `sheep` entity, it will attack the nearest war
     /// machine.
     pub fn attack_component(&self) -> Attack {
         Attack {
-            attack_damage: SHEEP_DEFAULT_ATTACK.attack_damage * self.attack_multiplier() as f32,
-            attack_range: SHEEP_DEFAULT_ATTACK.attack_range,
-            spotting_range: SHEEP_DEFAULT_ATTACK.spotting_range,
+            attack_damage: SHEEP_DEFAULT_ATTACK.attack_damage * (self.sum_levels() + 1.0) / 2.0,
+            attack_range: SHEEP_DEFAULT_ATTACK.attack_range
+                * ((self.sum_levels() / 2.0).log2() + 0.2).clamp(1.0, 2.0),
+            spotting_range: SHEEP_DEFAULT_ATTACK.spotting_range
+                * ((self.sum_levels()).log2() + 1.0),
         }
+    }
+
+    /// Diminishing speed
+    pub fn speed_component(&self) -> Speed {
+        Speed(SHEEP_WANDER_SPEED * (self.sum_levels()).log2() + 1.0)
+    }
+
+    pub fn health_component(&self) -> Health {
+        let hp = SHEEP_DEFAULT_HEALTH * (self.sum_levels());
+        Health::new(hp)
     }
 }
 
@@ -185,6 +201,9 @@ fn spawn_sheep(
     transform.rotation = Quat::IDENTITY;
 
     let attack = sheep.attack_component();
+    let speed = sheep.speed_component();
+    let health = sheep.health_component();
+
     let sheep = commands
         .spawn_bundle(SpriteSheetBundle {
             transform,
@@ -192,7 +211,7 @@ fn spawn_sheep(
             sprite: TextureAtlasSprite {
                 index: 1,
                 custom_size: Some(Vec2::new(20.0, 19.0) / 16.0),
-                color: Color::WHITE * sheep.col,
+                color: Color::WHITE * sheep.color,
                 ..default()
             },
             ..default()
@@ -211,11 +230,8 @@ fn spawn_sheep(
             x: (PEN_BOUNDS_X.x, PEN_BOUNDS_X.y),
             y: (PEN_BOUNDS_Y.x, PEN_BOUNDS_Y.y),
         })
-        .insert(Speed(SHEEP_WANDER_SPEED))
-        .insert(Health {
-            current: SHEEP_DEFAULT_HEALTH,
-            max: SHEEP_DEFAULT_HEALTH,
-        })
+        .insert(speed)
+        .insert(health)
         .insert(attack)
         .id();
 
@@ -260,6 +276,7 @@ fn init_new_game(
         .push_children(&sheep);
 
     commands.remove_resource::<NewGame>();
+    commands.insert_resource(Level(1));
 }
 
 fn add_level_reward_sheep(
@@ -272,6 +289,28 @@ fn add_level_reward_sheep(
 
     commands.entity(sheep_parent.single()).push_children(&sheep);
     commands.remove_resource::<LevelReward>();
+}
+
+fn setup_ui(mut commands: Commands, ascii_sheet: Res<AsciiSheet>, level: Res<Level>) {
+    let start_battle_text = write_text(
+        &mut commands,
+        &ascii_sheet,
+        Vec2::new(-2.6, -4.3).extend(50.0),
+        Color::WHITE,
+        "Press SPACE to fight!",
+    );
+
+    let lvl_string = level.0;
+    let level_text = write_text(
+        &mut commands,
+        &ascii_sheet,
+        Vec2::new(6.5, 4.3).extend(50.0),
+        Color::WHITE,
+        format!("Lvl: {lvl_string}").as_str(),
+    );
+
+    commands.entity(start_battle_text).insert(UnloadOnExit);
+    commands.entity(level_text).insert(UnloadOnExit);
 }
 
 fn spawn_n_sheep(
@@ -353,9 +392,6 @@ fn grab_sheep(
     }
 }
 
-#[derive(Component)]
-struct Selected;
-
 fn drop_sheep(
     mut commands: Commands,
     texture: Res<SheepSprites>,
@@ -395,15 +431,20 @@ fn drop_sheep(
 #[derive(Component)]
 struct Select;
 
+#[derive(Component)]
+struct SelectedText;
+
 // Would prefer to be called `select_sheep` but there was a previous system of that name (now
 // changed to `grab_sheep`) and I didn't want to give confusing merge conflicts
 /// Add the little select icon to the sheep when they're selected, this will also display their
 /// stats in the future
 fn sheep_select(
     mut commands: Commands,
-    q: Query<Entity, (With<Sheep>, Added<Drag>)>,
+    q: Query<(Entity, &Sheep), Added<Drag>>,
     currently_selected: Query<Entity, With<Select>>,
+    selected_text: Query<Entity, With<SelectedText>>,
     assets: Res<AssetServer>,
+    ascii_sheet: Res<AsciiSheet>,
 ) {
     let mut added_this_frame = Vec::new();
     if !q.is_empty() {
@@ -412,7 +453,7 @@ fn sheep_select(
         }
     }
 
-    for entity in q.iter() {
+    for (entity, sheep) in q.iter() {
         // NOTE: This needs some work. Namely, it shouldn't rotate with the sheep - but the only
         // way I can think of to achieve that would be to have the sheep's body sprite be a child of
         // the sheep object, which is some refactoring I don't want to do right now, but will have
@@ -432,11 +473,44 @@ fn sheep_select(
                 ..default()
             })
             .insert(Select)
+            .insert(UnloadOnExit)
             .insert(Name::from("SelectBox"))
             .id();
         commands.entity(entity).add_child(select_box);
 
+        // Remove old text
+        if !selected_text.is_empty() {
+            selected_text.for_each(|text| commands.entity(text).despawn_recursive());
+        }
+
+        // Add new text
+        let lvl_string = sheep.sum_levels();
+        let sheep_stats = write_text(
+            &mut commands,
+            &ascii_sheet,
+            Vec2::new(-1.0, 4.3).extend(50.0),
+            Color::WHITE,
+            format!("Sheep lvl: {lvl_string}").as_str(),
+        );
+        commands
+            .entity(sheep_stats)
+            .insert(SelectedText)
+            .insert(UnloadOnExit);
+
         added_this_frame.push(select_box.id());
+    }
+}
+
+/// Handles orphanes selected text when an entity is deselected
+fn remove_selected_text(
+    mut commands: Commands,
+    selected_text_q: Query<Entity, With<SelectedText>>,
+    selected_entity_q: Query<Entity, With<Select>>,
+) {
+    if selected_entity_q.is_empty() && !selected_text_q.is_empty() {
+        commands
+            .entity(selected_text_q.single())
+            .despawn_recursive();
     }
 }
 
@@ -557,7 +631,7 @@ fn keyboard_input(
     keys: ResMut<Input<KeyCode>>,
     sheep_q: Query<Entity, With<SheepParent>>,
 ) {
-    if keys.just_released(KeyCode::Key1) {
+    if keys.just_released(KeyCode::Space) {
         commands.insert_resource(NextState(GameState::Battle));
     }
 

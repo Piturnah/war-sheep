@@ -1,0 +1,37 @@
+name: deploy-github-page
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    - name: Install rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+    - name: Installing wasm
+      run: rustup target install wasm32-unknown-unknown
+    - name: Installing wasm cli
+      run: cargo install -f wasm-bindgen-cli
+    - name: Build
+      run: cargo build --target wasm32-unknown-unknown --release
+    - name: Building wasm
+      run: wasm-bindgen --out-dir ./out/ --target web ./target/wasm32-unknown-unknown/release/war-sheep.wasm
+    - name: Move wasm build artifacts to out directory
+      run: |
+        cp -r ./assets out
+        cp index.html out
+    - name: Deploy to GitHub Pages
+      uses: JamesIves/github-pages-deploy-action@v4.2.5
+      with:
+        branch: gh-pages
+        folder: out

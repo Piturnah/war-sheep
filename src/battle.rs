@@ -33,6 +33,8 @@ pub const BATTLEFIELD_BOUNDS_Y: Vec2 = Vec2::new(-6.4, 7.0);
 
 pub const DEFAULT_ROUND_TIME: f32 = 15.0;
 
+pub const MAX_LEVEL: usize = 4;
+
 pub struct BattlePlugin;
 
 impl Plugin for BattlePlugin {
@@ -63,7 +65,11 @@ impl Plugin for BattlePlugin {
             GameState::Battle,
             ConditionSet::new()
                 .with_system(setup_level1.run_if_resource_equals::<Level>(Level(1)))
+                .with_system(setup_level2.run_if_resource_equals::<Level>(Level(2)))
+                .with_system(setup_level3.run_if_resource_equals::<Level>(Level(3)))
+                .with_system(setup_level4.run_if_resource_equals::<Level>(Level(4)))
                 .with_system(add_health_bars_to_sheep)
+                .with_system(setup_ui)
                 .into(),
         )
         .add_exit_system_set(
@@ -156,7 +162,20 @@ fn apply_dying_to_dead_war_machines(
     }
 }
 
-/// Increases battler timer and renders it to screen
+fn setup_ui(mut commands: Commands, ascii_sheet: Res<AsciiSheet>, level: Res<Level>) {
+    let lvl_string = level.0;
+    let level_text = write_text(
+        &mut commands,
+        &ascii_sheet,
+        Vec2::new(6.5, 4.3).extend(50.0),
+        Color::WHITE,
+        format!("Lvl: {lvl_string}").as_str(),
+    );
+
+    commands.entity(level_text).insert(UnloadOnExit);
+}
+
+/// Increases battle timer and renders it to screen
 fn update_battle_timer(
     mut commands: Commands,
     time: Res<Time>,
@@ -173,7 +192,7 @@ fn update_battle_timer(
     let battle_timer = write_text(
         &mut commands,
         &ascii_sheet,
-        Vec2::new(-0.5, -3.8).extend(50.0),
+        Vec2::new(-0.5, -4.3).extend(50.0),
         Color::WHITE,
         format!("{elapsed:.2}").as_str(),
     );
@@ -189,7 +208,7 @@ fn check_end_battle(
     battle_timer: Res<BattleTimer>,
     sheep_q: Query<Entity, (With<sheep::Sheep>, Without<WarMachine>)>,
     war_machines_q: Query<Entity, (Without<sheep::Sheep>, With<WarMachine>)>,
-    mut _level: ResMut<Level>,
+    mut level: ResMut<Level>,
 ) {
     if battle_timer.0.just_finished() || sheep_q.is_empty() || war_machines_q.is_empty() {
         // TODO: should show battle report, before going straight to Herding
@@ -205,18 +224,23 @@ fn check_end_battle(
         }
 
         // Increase level if all war machines are dead
-        // Currently commented, not all levels are defined
-        //if war_machines_q.is_empty() {
-        //level.0 += 1;
-        //}
+        if war_machines_q.is_empty() && level.0 < MAX_LEVEL {
+            level.0 += 1;
+        }
     }
 }
 
-fn setup_level1(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    robot_animations: Res<war_machines::RobotAnimations>,
-) {
+fn random_position_within_battlefield() -> Transform {
+    let mut rng = thread_rng();
+    Transform::from_translation(Vec3::new(
+        rng.gen_range(BATTLEFIELD_BOUNDS_X.x..=BATTLEFIELD_BOUNDS_X.y),
+        rng.gen_range(BATTLEFIELD_BOUNDS_Y.x..=BATTLEFIELD_BOUNDS_Y.y),
+        10.0,
+    ))
+    .with_scale(Vec3::splat(0.05))
+}
+
+fn setup_battlefield(commands: &mut Commands, asset_server: &Res<AssetServer>) {
     // Spawn red battlefield to distinguish from the pen
     // TODO: should be replaced with a proper asset
     commands
@@ -234,35 +258,150 @@ fn setup_level1(
             ..default()
         })
         .insert(UnloadOnExit)
-        .insert(Name::from("Battlefield"));
+        .insert(Name::from("BattlefieldBehind"));
+
+    commands
+        .spawn_bundle(SpriteBundle {
+            texture: asset_server.load("SheepFarmInfront.png"),
+            sprite: Sprite {
+                color: Color::ORANGE_RED,
+                custom_size: Some(Vec2::new(550.0, 300.0) / 16.0),
+                ..default()
+            },
+            transform: Transform {
+                translation: Vec2::splat(0.0).extend(20.0),
+                ..default()
+            },
+            ..default()
+        })
+        .insert(UnloadOnExit)
+        .insert(Name::from("BattlefieldFront"));
 
     // Add round timer
     commands.insert_resource(BattleTimer(Timer::from_seconds(DEFAULT_ROUND_TIME, false)));
     commands.insert_resource(BattleResult {
-        level_reward_sheep_gained: 5,
+        level_reward_sheep_gained: 10,
         ..default()
     });
+}
+
+fn setup_level1(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    robot_animations: Res<war_machines::RobotAnimations>,
+) {
+    setup_battlefield(&mut commands, &asset_server);
 
     // Spawn a single war machine
-    let mut rng = thread_rng();
-    let transform = Transform::from_translation(Vec3::new(
-        rng.gen_range(BATTLEFIELD_BOUNDS_X.x..=BATTLEFIELD_BOUNDS_X.y),
-        rng.gen_range(BATTLEFIELD_BOUNDS_Y.x..=BATTLEFIELD_BOUNDS_Y.y),
-        10.0,
-    ));
-
-    let war_machine = new_war_machine(&mut commands, &robot_animations, transform);
+    let war_machine = new_war_machine(
+        &mut commands,
+        &robot_animations,
+        random_position_within_battlefield(),
+    );
     commands
         .entity(war_machine)
         .insert(Speed(4.0))
-        .insert(Health {
-            current: 60.0,
-            max: 60.0,
-        })
+        .insert(Health::new(60.0))
         .insert(Attack {
             attack_damage: 10.0,
             attack_range: 1.0,
             spotting_range: 1000.0,
         })
         .insert(BehaviourType::ChasingClosest);
+}
+
+fn setup_level2(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    robot_animations: Res<war_machines::RobotAnimations>,
+) {
+    setup_battlefield(&mut commands, &asset_server);
+
+    // Spawn 2 war machines
+    for _ in 0..2 {
+        let war_machine = new_war_machine(
+            &mut commands,
+            &robot_animations,
+            random_position_within_battlefield(),
+        );
+        commands
+            .entity(war_machine)
+            .insert(Speed(5.0))
+            .insert(Health::new(150.0))
+            .insert(Attack {
+                attack_damage: 30.0,
+                attack_range: 1.0,
+                spotting_range: 1000.0,
+            })
+            .insert(BehaviourType::ChasingClosest);
+    }
+}
+
+fn setup_level3(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    robot_animations: Res<war_machines::RobotAnimations>,
+) {
+    setup_battlefield(&mut commands, &asset_server);
+
+    // Spawn 5 small war machines
+    for _ in 0..5 {
+        let war_machine = new_war_machine(
+            &mut commands,
+            &robot_animations,
+            random_position_within_battlefield(),
+        );
+        commands
+            .entity(war_machine)
+            .insert(Speed(5.0))
+            .insert(Health::new(80.0))
+            .insert(Attack {
+                attack_damage: 10.0,
+                attack_range: 1.0,
+                spotting_range: 1000.0,
+            })
+            .insert(BehaviourType::ChasingClosest);
+    }
+
+    // Spawn 1 bigger war machine
+    let mut transform = random_position_within_battlefield();
+    transform.scale = Vec3::splat(0.1);
+
+    let war_machine = new_war_machine(&mut commands, &robot_animations, transform);
+    commands
+        .entity(war_machine)
+        .insert(Speed(5.0))
+        .insert(Health::new(300.0))
+        .insert(Attack {
+            attack_damage: 10.0,
+            attack_range: 0.8,
+            spotting_range: 1000.0,
+        })
+        .insert(BehaviourType::ChasingClosest);
+}
+
+fn setup_level4(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    robot_animations: Res<war_machines::RobotAnimations>,
+) {
+    setup_battlefield(&mut commands, &asset_server);
+
+    // Spawn 3 big war machines
+    for _ in 0..3 {
+        let mut transform = random_position_within_battlefield();
+        transform.scale = Vec3::splat(0.1);
+
+        let war_machine = new_war_machine(&mut commands, &robot_animations, transform);
+        commands
+            .entity(war_machine)
+            .insert(Speed(10.0))
+            .insert(Health::new(300.0))
+            .insert(Attack {
+                attack_damage: 30.0,
+                attack_range: 1.0,
+                spotting_range: 1000.0,
+            })
+            .insert(BehaviourType::ChasingClosest);
+    }
 }
